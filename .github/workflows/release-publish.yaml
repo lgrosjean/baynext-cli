@@ -115,3 +115,8 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to PyPI
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish --token $PYPI_TOKEN
