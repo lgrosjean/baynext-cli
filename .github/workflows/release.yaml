@@ -6,10 +6,17 @@ on:
       - main
     paths:
       - pyproject.toml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (leave empty to use pyproject.toml version)'
+        required: false
+        type: string
 
 jobs:
   check-version:
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
     outputs:
       version-changed: ${{ steps.check.outputs.changed }}
       new-version: ${{ steps.check.outputs.version }}
@@ -47,13 +54,34 @@ jobs:
           fi
 
   create-release:
-    needs: check-version
-    if: needs.check-version.outputs.version-changed == 'true'
+    needs: [check-version]
+    if: |
+      always() && (
+        (github.event_name == 'push' && needs.check-version.outputs.version-changed == 'true') ||
+        github.event_name == 'workflow_dispatch'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.version }}" ]; then
+              echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+              echo "Using manual input version: ${{ github.event.inputs.version }}"
+            else
+              PYPROJECT_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+              echo "version=$PYPROJECT_VERSION" >> $GITHUB_OUTPUT
+              echo "Using pyproject.toml version: $PYPROJECT_VERSION"
+            fi
+          else
+            echo "version=${{ needs.check-version.outputs.new-version }}" >> $GITHUB_OUTPUT
+            echo "Using detected version: ${{ needs.check-version.outputs.new-version }}"
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -65,42 +93,25 @@ jobs:
         run: uv build
 
       - name: Create Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check-version.outputs.new-version }}
-          release_name: Release v${{ needs.check-version.outputs.new-version }}
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release v${{ steps.version.outputs.version }}
           body: |
-            ## Changes in v${{ needs.check-version.outputs.new-version }}
+            ## Changes in v${{ steps.version.outputs.version }}
             
-            This release was automatically created when the version in pyproject.toml was updated.
+            ${{ github.event_name == 'workflow_dispatch' && 'This release was manually created.' || 'This release was automatically created when the version in pyproject.toml was updated.' }}
             
             ### Installation
             ```bash
-            pip install baynext-cli==${{ needs.check-version.outputs.new-version }}
+            pip install baynext-cli==${{ steps.version.outputs.version }}
             ```
             
             See the [changelog](CHANGELOG.md) for detailed changes.
+          files: |
+            dist/baynext_cli-${{ steps.version.outputs.version }}-py3-none-any.whl
+            dist/baynext-cli-${{ steps.version.outputs.version }}.tar.gz
           draft: false
           prerelease: false
-
-      - name: Upload Release Assets
-        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/baynext_cli-${{ needs.check-version.outputs.new-version }}-py3-none-any.whl
-          asset_name: baynext_cli-${{ needs.check-version.outputs.new-version }}-py3-none-any.whl
-          asset_content_type: application/zip
-
-      - name: Upload Source Distribution
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/baynext-cli-${{ needs.check-version.outputs.new-version }}.tar.gz
-          asset_name: baynext-cli-${{ needs.check-version.outputs.new-version }}.tar.gz
-          asset_content_type: application/gzip
